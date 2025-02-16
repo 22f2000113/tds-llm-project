@@ -4,6 +4,7 @@
 #     "fastapi",
 #     "requests",
 #     "uvicorn",
+#     "numpy",
 # ]
 # ///
 
@@ -17,7 +18,7 @@ from subprocess import run
 from fastapi.responses import PlainTextResponse
 import time
 import traceback
-
+import numpy as np
 app = FastAPI()
 
 # Global file counter
@@ -83,6 +84,18 @@ response_format = {
                     "description": "List of required Python packages that are not preinstalled. Do not add 'uv' or standard Python libraries (such as 'os', 'sys', etc.). Only include third-party packages or modules that are not included by default in the Python installation.",
                     "additionalProperties": False,
                 },
+				 "input_file" :{
+                    "type" :"string",
+                    "description" :"Input file where data is provided"
+                },
+                "output_file" :{
+                    "type" :"string",
+                    "description" :"Ouput file path where result needs to stored."
+                },
+				"embedding_similarity" : {
+				 "type" :"boolean",
+                    "description" :"True if need to find smilirity using embedding "
+				}
             },
         },
     },
@@ -106,6 +119,7 @@ SYSTEM_PROMPT = """You are an automated agent, so generate the required Python c
         Keep the relative path after `/data/docs/` in the filename.
         Example: Convert `/data/docs/listen/next.md` to `"listen/next.md"`
         Do not remove directory paths under `/data/docs/`
+     9. for finding smilirity using embedding return file paths
 """
 
 def updated_task(task, code, error):
@@ -136,10 +150,48 @@ def get_result(task):
         }
     )
     
+    
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="AI Proxy request failed")
-
+    
+    #print(response.json())
     return response.json()["choices"][0]["message"]
+    
+def get_embeddings(data):
+    print("get embeddings")
+    rp = requests.post(
+        url="https://aiproxy.sanand.workers.dev/openai/v1/embeddings",
+        headers=headers,
+        json={"model": "text-embedding-3-small", "input": data},
+    )
+    
+    #print(rp.json())
+    return rp.json()["data"]
+
+def embedding_similarity(params):
+    print("input file ")
+        
+    input_file = params['input_file']
+    output_file = params['output_file']
+
+    with open(input_file, 'r') as file:
+            # Read lines and create a list
+            data = file.readlines()
+
+    # Remove newline characters from each line
+    data = [line.strip() for line in data]
+   
+    #print("data ", data)
+    embs = get_embeddings(data)
+    embeddings = np.array([emb["embedding"] for emb in embs])
+    similarity = np.dot(embeddings, embeddings.T)
+    # Create mask to ignore diagonal (self-similarity)
+    np.fill_diagonal(similarity, -np.inf)
+    # Get indices of maximum similarity
+    i, j = np.unravel_index(similarity.argmax(), similarity.shape)
+    similar = "\n".join(sorted([data[i], data[j]]))
+    print("similary lines",similar)
+    write_file(output_file,similar)
 
 def task_executor(file_name, params):
     """Executes the generated Python script with dependencies."""
@@ -186,34 +238,40 @@ def run_tasks(task: str):
     try:
         start_time = time.time()
         response = get_result(task)
-        file_name = f"llm_task{ file_counter }.py"
-        #print("file_name and task " ,  str(file_name) , str(task))
-        file_counter += 1
-        output = task_executor(file_name, json.loads(response["content"]))
-        print("output " + str(output))
-        retry_count = 0
-        while retry_count < 2:
-            if output == "success":
-                end_time = time.time()
-                elapsed_time = end_time - start_time
-                print(
-                    f"Success.Time taken to execute the function successfully: {elapsed_time} seconds"
-                )
-                return {"status_code": 200, "details": "Successfully executed task"}
-            elif "error" in output:
-                response = get_result(updated_task(task=task, code=read_file(file_name), error=output["error"]))
-                file_name = f"llm_task{ file_counter }.py"
-                print("retry elif file_name and task " ,  str(file_name) , str(task) )
-                file_counter += 1
-                output = task_executor(file_name, json.loads(response["content"]))
-            retry_count += 1
-        # If the retry loop ends, record the time and return an error
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        print(
-            f"Time taken to execute the function with retries: {elapsed_time} seconds"
-        )
-        return {"status_code": 500, "details": "Task execution failed after retries"}
+        response_content = json.loads(response["content"])
+        print("embedding ",response_content["embedding_similarity"],type(response_content["embedding_similarity"]))
+        if response_content["embedding_similarity"]:
+            embedding_similarity(response_content)
+            return {"status_code": 200, "details": "Successfully executed task"}
+        else:
+            file_name = f"llm_task{ file_counter }.py"
+            #print("file_name and task " ,  str(file_name) , str(task))
+            file_counter += 1
+            output = task_executor(file_name, response_content)
+            print("output " + str(output))
+            retry_count = 0
+            while retry_count < 2:
+                if output == "success":
+                    end_time = time.time()
+                    elapsed_time = end_time - start_time
+                    print(
+                        f"Success.Time taken to execute the function successfully: {elapsed_time} seconds"
+                    )
+                    return {"status_code": 200, "details": "Successfully executed task"}
+                elif "error" in output:
+                    response = get_result(updated_task(task=task, code=read_file(file_name), error=output["error"]))
+                    file_name = f"llm_task{ file_counter }.py"
+                    print("retry elif file_name and task " ,  str(file_name) , str(task) )
+                    file_counter += 1
+                    output = task_executor(file_name, json.loads(response["content"]))
+                retry_count += 1
+            # If the retry loop ends, record the time and return an error
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print(
+                f"Time taken to execute the function with retries: {elapsed_time} seconds"
+            )
+            return {"status_code": 500, "details": "Task execution failed after retries"}
     except Exception as e:
         # If an exception is raised, stop the timer
         end_time = time.time()
