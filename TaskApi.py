@@ -90,7 +90,7 @@ response_format = {
                 },
                 "output_file" :{
                     "type" :"string",
-                    "description" :"Ouput file path where result needs to stored."
+                    "description" :"Output file path where result needs to stored."
                 },
 				"embedding_similarity" : {
 				 "type" :"boolean",
