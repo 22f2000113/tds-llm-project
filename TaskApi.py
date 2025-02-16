@@ -239,8 +239,8 @@ def run_tasks(task: str):
         start_time = time.time()
         response = get_result(task)
         response_content = json.loads(response["content"])
-        print("embedding ",response_content["embedding_similarity"],type(response_content["embedding_similarity"]))
-        if response_content["embedding_similarity"]:
+        #print("embedding ",response_content["embedding_similarity"],type(response_content["embedding_similarity"]))
+        if 'embedding_similarity' in response_content and  response_content["embedding_similarity"]:
             embedding_similarity(response_content)
             return {"status_code": 200, "details": "Successfully executed task"}
         else:
